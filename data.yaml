@@ -1,0 +1,13 @@
+train: ./train/images
+val: ./valid/images
+test: ./test/images
+
+nc: 10
+names: ['celurit', 'darah', 'gunting', 'kapak', 'kayu', 'pemukul', 'pisau', 'pistol', 'robbery', 'tongkat']
+
+roboflow:
+  workspace: pkmsaber
+  project: saber_pkm
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/pkmsaber/saber_pkm/dataset/2
