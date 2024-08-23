@@ -118,7 +118,8 @@ class VideoStreamTrack(VideoStreamTrack):
                     global_person_detected_start_time = None
                     await asyncio.sleep(0.02)
                 cv2.imwrite(
-                    f"./detected/person_{str(datetime.datetime.now()).replace(' ', '_')}.jpg", img
+                    f"./detected/person_{str(datetime.datetime.now()).replace(' ', '_')}.jpg",
+                    img,
                 )
         else:
             global_person_detected_start_time = None
@@ -309,13 +310,13 @@ class App(customtkinter.CTk):
         self.connect_button = customtkinter.CTkButton(
             self, text="Connect", command=self.connect_button_event
         )
-        self.connect_button.grid(row=3, column=2, padx=20, pady=(10, 20), sticky="ew")
+        self.connect_button.grid(row=3, column=1, padx=10, pady=(10, 20), sticky="ew")
 
         self.disconnect_button = customtkinter.CTkButton(
             self, text="Disconnect", command=lambda: self.disconnect_button_event(loop)
         )
         self.disconnect_button.grid(
-            row=3, column=1, padx=20, pady=(10, 20), sticky="ew"
+            row=3, column=2, padx=10, pady=(10, 20), sticky="ew"
         )
 
 
