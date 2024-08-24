@@ -1,0 +1,11 @@
+python3.11
+torch
+opencv-python
+aiortc
+aiohttp
+customtkinter
+tk
+pillow
+ultralytics
+tensorflow
+libomp140_x86_64.zip

@@ -143,11 +143,18 @@ async def offer(request):
 pcs = set()
 
 async def stop_server(request):
-    logging.info("Stopping the server...")
-    await request.app.shutdown()
-    await request.app.cleanup()
-    asyncio.get_event_loop().stop()
-    return web.Response(text="Server stopped", content_type="text/plain")
+    logging.info("Stopping camera...")
+    
+    # for pc in pcs:
+    #     for t in pc.getTransceivers():
+    #         if t.kind == "video":
+                # await t.sender.replaceTrack(None)  # Stop sending the video track
+
+    if webcam and webcam.audio is None:
+        # webcam.audio is None checks if the MediaPlayer is still active
+        webcam.video.stop()  # Stops the media player video track if applicable
+    
+    return web.Response(text="Camera stopped", content_type="text/plain")
 
 async def on_shutdown(app):
     coros = [pc.close() for pc in pcs]
@@ -169,7 +176,7 @@ if __name__ == "__main__":
         action="store_true",
     )
     parser.add_argument(
-        "--host", default="127.0.0.1", help="Host for HTTP server (default: 127.0.0.1)"
+        "--host", default="192.168.200.20", help="Host for HTTP server (default: 127.0.0.1)"
     )
     parser.add_argument(
         "--port", type=int, default=3123, help="Port for HTTP server (default: 3123)"
