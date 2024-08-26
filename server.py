@@ -1,4 +1,5 @@
 import argparse
+import configparser
 import asyncio
 import json
 import os
@@ -11,7 +12,11 @@ from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
 
 ROOT = os.path.dirname(__file__)
-
+config = configparser.ConfigParser()
+config.read("config/serverconfig.ini")
+HOST = config["DEFAULT"]["server_host"]
+PORT = int(config["DEFAULT"]["server_port"])
+CAMERA_ID = config["DEFAULT"]["camera_id"]
 relay = None
 webcam = None
 
@@ -27,19 +32,24 @@ def create_local_tracks(play_from, decode):
         options = {
             "framerate": "25",
             "video_size": "320x240",  # Lower resolution
-            "rtbufsize": "32020000"   # Increase buffer size to 7MB (you can adjust this value)
+            "rtbufsize": "32020000",  # Increase buffer size to 7MB (you can adjust this value)
         }
         if relay is None:
             if platform.system() == "Darwin":
+                camera_format = config["DEFAULT"]["mac_camera_format"]
                 webcam = MediaPlayer(
-                    "default:none", format="avfoundation", options=options
+                    "default:none", format=camera_format, options=options
                 )
             elif platform.system() == "Windows":
+                camera_format = config["DEFAULT"]["win_camera_format"]
                 webcam = MediaPlayer(
-                    "video=HP HD Camera", format="dshow", options=options
+                    f"video={CAMERA_ID}", format=camera_format, options=options
                 )
             else:
-                webcam = MediaPlayer("/dev/video0", format="v4l2", options=options)
+                camera_format = config["DEFAULT"]["lin_camera_format"]
+                webcam = MediaPlayer(
+                    f"/dev/{CAMERA_ID}", format=camera_format, options=options
+                )
             relay = MediaRelay()
         return None, relay.subscribe(webcam.video)
 
@@ -51,16 +61,6 @@ def force_codec(pc, sender, forced_codec):
     transceiver.setCodecPreferences(
         [codec for codec in codecs if codec.mimeType == forced_codec]
     )
-
-
-async def index(request):
-    content = open(os.path.join(ROOT, "index.html"), "r").read()
-    return web.Response(content_type="text/html", text=content)
-
-
-async def javascript(request):
-    content = open(os.path.join(ROOT, "client.js"), "r").read()
-    return web.Response(content_type="application/javascript", text=content)
 
 
 async def websocket_handler(request):
@@ -83,10 +83,6 @@ async def websocket_handler(request):
 async def offer(request):
     params = await request.json()
 
-    # # Log the received SDP and type
-    # print("Received SDP:", params["sdp"])
-    # print("Received type:", params["type"])
-
     # Validate type
     valid_types = ["offer", "pranswer", "answer", "rollback"]
     if params["type"] not in valid_types:
@@ -108,7 +104,7 @@ async def offer(request):
             await pc.close()
             pcs.discard(pc)
             pcs.clear()
-            
+
     # Open media source
     audio, video = create_local_tracks(
         args.play_from, decode=not args.play_without_decoding
@@ -142,19 +138,21 @@ async def offer(request):
 
 pcs = set()
 
+
 async def stop_server(request):
     logging.info("Stopping camera...")
-    
+
     # for pc in pcs:
     #     for t in pc.getTransceivers():
     #         if t.kind == "video":
-                # await t.sender.replaceTrack(None)  # Stop sending the video track
+    # await t.sender.replaceTrack(None)  # Stop sending the video track
 
     if webcam and webcam.audio is None:
         # webcam.audio is None checks if the MediaPlayer is still active
         webcam.video.stop()  # Stops the media player video track if applicable
-    
+
     return web.Response(text="Camera stopped", content_type="text/plain")
+
 
 async def on_shutdown(app):
     coros = [pc.close() for pc in pcs]
@@ -176,10 +174,12 @@ if __name__ == "__main__":
         action="store_true",
     )
     parser.add_argument(
-        "--host", default="192.168.200.20", help="Host for HTTP server (default: 127.0.0.1)"
+        "--host",
+        default=HOST,
+        help=f"Host for HTTP server (default: {HOST})",
     )
     parser.add_argument(
-        "--port", type=int, default=3123, help="Port for HTTP server (default: 3123)"
+        "--port", type=int, default=PORT, help=f"Port for HTTP server (default: {PORT})"
     )
     parser.add_argument("--verbose", "-v", action="count")
     parser.add_argument(
@@ -204,10 +204,8 @@ if __name__ == "__main__":
 
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
-    app.router.add_get("/", index)
     app.router.add_get("/stop", stop_server)
-    app.router.add_get("/client.js", javascript)
-    app.router.add_get("/ws", websocket_handler)  # WebSocket route
+    app.router.add_get("/ws", websocket_handler)
     app.router.add_post("/offer", offer)
-    
+
     web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)

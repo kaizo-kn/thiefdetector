@@ -1,47 +1,40 @@
+import io
 import os
 import platform
 import sys
-from pathlib import Path
 import time
 import configparser
-import requests
 import torch
 import asyncio
 import cv2
 import numpy as np
 import importlib.util
+import threading
+import datetime
+import customtkinter as ctk
+from pathlib import Path
+from PIL import Image
+from ultralytics.utils.plotting import Annotator, colors
+from models.common import DetectMultiBackend
+from utils.general import cv2, non_max_suppression
+from utils.torch_utils import smart_inference_mode
+from aiohttp import ClientSession, FormData
 from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
     VideoStreamTrack,
 )
-from aiohttp import ClientSession
-import customtkinter as ctk
-import threading
-import datetime
-from PIL import Image, ImageTk
 
 if platform.system() == "Windows":
     import pathlib
 
     temp = pathlib.PosixPath
     pathlib.PosixPath = pathlib.WindowsPath
-
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
-
-from ultralytics.utils.plotting import Annotator, colors, save_one_box
-from models.common import DetectMultiBackend
-from utils.general import (
-    cv2,
-    non_max_suppression,
-    scale_boxes,
-)
-from utils.torch_utils import select_device, smart_inference_mode
-
 ctk.set_appearance_mode("System")  # Modes: "System", "Dark", "Light"
 ctk.set_default_color_theme("blue")  # Themes: "blue", "green", "dark-blue"
 
@@ -49,13 +42,16 @@ ctk.set_default_color_theme("blue")  # Themes: "blue", "green", "dark-blue"
 # ----- TensorFlow Lite -----
 
 config = configparser.ConfigParser()
-config.read("const.ini")
-global_yolo_weights = config["DEFAULT"]["yolo_weights"]
+config.read("config/const.ini")
+
+# ------- CONSTANTS ---------
+APP_NAME = config["DEFAULT"]["app_name"]
+YOLO_WEIGHTS = config["DEFAULT"]["yolo_weights"]
 MODEL_NAME = config["DEFAULT"]["model_name"]
 GRAPH_NAME = config["DEFAULT"]["graph_name"]
 LABELMAP_NAME = config["DEFAULT"]["labelmap_name"]
 MIN_DETECT_TIME = int(config["DEFAULT"]["min_detect_time"])
-min_conf_threshold = float(config["DEFAULT"]["min_conf_threshold"])
+CONF_THRESHOLD = float(config["DEFAULT"]["min_conf_threshold"])
 SERVER_IMAGE_ENDPOINT = config["DEFAULT"]["server_image_endpoint"]
 SERVER_DATA_ENDPOINT = config["DEFAULT"]["server_data_endpoint"]
 ANNOTATE = config["DEFAULT"]["annotate"]
@@ -76,8 +72,6 @@ else:
 
 interpreter = Interpreter(model_path=PATH_TO_CKPT)
 interpreter.allocate_tensors()
-
-# Get model details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 height = input_details[0]["shape"][1]
@@ -86,6 +80,7 @@ floating_model = input_details[0]["dtype"] == np.float32
 input_mean = 127.5
 input_std = 127.5
 
+# ----- Global Variables -----
 global_url = None
 global_device = "cpu"
 global_model = None
@@ -98,9 +93,8 @@ global_target_detected_start_time = None
 global_target = "robbery"
 global_save_image = False
 global_modelname = "yolo"
+# --- End Global Variables ----
 
-# Check output layer name to determine if this model was created with TF2 or TF1,
-# because outputs are ordered differently for TF2 and TF1 models
 outname = output_details[0]["name"]
 
 if "StatefulPartitionedCall" in outname:  # This is a TF2 model
@@ -137,7 +131,7 @@ def tflite_detect(frame):
 
     detections = []
     for i in range(len(scores)):
-        if (scores[i] > min_conf_threshold) and (scores[i] <= 1.0):
+        if (scores[i] > CONF_THRESHOLD) and (scores[i] <= 1.0):
             ymin = int(max(1, (boxes[i][0] * imH)))
             xmin = int(max(1, (boxes[i][1] * imW)))
             ymax = int(min(imH, (boxes[i][2] * imH)))
@@ -195,7 +189,7 @@ def yolo_detect(frame, device, model):
         annotator = Annotator(image, example=str(model.names))
         label = ""
         for *xyxy, conf, cls in reversed(pred[0]):
-            if conf > min_conf_threshold:
+            if conf > CONF_THRESHOLD:
                 label = model.names[int(cls)]
                 if ANNOTATE == "1":
                     img_label = f"{label} {conf:.2f}"
@@ -208,17 +202,49 @@ def yolo_detect(frame, device, model):
 # ----- End Yolov5 -----
 
 
-def send_image(path):
-    with open(path, "rb") as f:
-        response = requests.post(SERVER_IMAGE_ENDPOINT, files={"image": f})
-        response.raise_for_status()
-    return response.text
+async def send_data(img, label, timestamp):
+    filename = f"{label}_{timestamp}.jpg"
+    if SERVER_IMAGE_ENDPOINT == "":
+        print("Not sending image to server")
+        return
+
+    try:
+        # Convert the ndarray BGR24 image to a JPEG in memory
+        _, img_encoded = cv2.imencode(".jpg", img)
+        f = io.BytesIO(img_encoded.tobytes())
+
+        async with ClientSession() as session:
+            # Prepare the form data
+            form = FormData()
+            form.add_field(
+                "image", f.getvalue(), filename=filename, content_type="image/jpeg"
+            )
+
+            # Prepare headers with additional metadata
+            headers = {
+                "X-Filename": filename,
+                "X-Label": label,
+                "X-Timestamp": timestamp,
+            }
+
+            async with session.post(
+                SERVER_IMAGE_ENDPOINT, data=form, headers=headers
+            ) as response:
+                response.raise_for_status()
+                print(await response.text())
+
+    except Exception as e:
+        print(e)
 
 
-def send_data(label, timestamp):
-    response = requests.get(SERVER_DATA_ENDPOINT, params={"label": label,"timestamp":timestamp})
-    response.raise_for_status()
-    return response.text
+
+def send_data_async(img, label, timestamp):
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        asyncio.ensure_future(send_data(img, label, timestamp))
+    else:
+        loop.run_until_complete(send_data(img, label, timestamp))
+
 
 
 @smart_inference_mode()
@@ -263,17 +289,16 @@ async def vidstream():
     async def on_track(track):
         if track.kind == "video":
             print("Video track received")
-            global global_show, global_video_label, global_test, global_annotation, global_device, global_model, global_target_detected_start_time, global_modelname, global_save_image, global_yolo_weights
+            global global_show, global_video_label, global_test, global_annotation, global_device, global_model, global_target_detected_start_time, global_modelname, global_save_image
 
             video_track = VideoStreamTrack(track)
             global_log.insert("0.0", "Connected to server\n")
             print("Connected!")
             print(global_modelname)
-            if global_modelname == "yolo":
-                model = DetectMultiBackend(
-                    global_yolo_weights,
-                    global_device,
-                )
+            model = DetectMultiBackend(
+                YOLO_WEIGHTS,
+                global_device,
+            )
             frame_count = 0
             frame_skip = FRAME_SKIP
             while True:
@@ -317,12 +342,8 @@ async def vidstream():
                                 print(
                                     global_target + " detected at: " + timestamp + "\n"
                                 )
-                                try:
-                                    response_data = send_data(global_target,timestamp)
-                                    print(response_data)
-                                except Exception as e:
-                                    print(f"Failed to send data: {e}")
-
+                                filename = f"{global_target}_{timestamp}.jpg"
+                                send_data_async(img, global_target, timestamp)
                                 if global_show == False:
                                     img_pil = Image.fromarray(
                                         cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -332,11 +353,9 @@ async def vidstream():
                                     global_video_label.configure(image=img_tk)
                                 if global_save_image:
                                     try:
-                                        file_path = f"{detected_dir}/{global_target}_{timestamp}.jpg"
+                                        file_path = f"{detected_dir}/{filename}"
                                         cv2.imwrite(file_path, img)
                                         print("detected image saved")
-                                        # response_image = send_image(file_path)
-                                        # print(response_image)
                                     except Exception as e:
                                         print(f"Failed to save image: {e}")
                                 global_target_detected_start_time = None
@@ -363,7 +382,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("SABER PKM")
+        self.title(APP_NAME)
         self.geometry("725x600")
 
         # Frame for Video Display
@@ -514,6 +533,11 @@ class App(ctk.CTk):
     def show_video_switch_event(self):
         global global_show
         global_show = self.show_video_switch.get()
+        if global_show == False:
+            img_pil = Image.new("RGB", (410, 310), color="black")
+            img_tk = ctk.CTkImage(img_pil, size=(410, 310))
+            global_video_label.imgtk = img_tk
+            global_video_label.configure(image=img_tk)
 
     def save_image_switch_event(self):
         global global_save_image
@@ -528,7 +552,7 @@ class App(ctk.CTk):
 
     def read_config(self):
         config = configparser.ConfigParser()
-        config_file = Path(__file__).parent / "config.ini"
+        config_file = Path(__file__).parent / "config/config.ini"
 
         if config_file.exists():
             config.read(config_file)
@@ -542,7 +566,10 @@ class App(ctk.CTk):
         global_annotation = True
         global_device = self.device_entry.get().strip()
         global_url = (
-            "http://" + config["DEFAULT"]["server_ip"] + ":" + config["DEFAULT"]["port"]
+            "http://"
+            + self.server_ip_entry.get().strip()
+            + ":"
+            + self.port_entry.get().strip()
         )
         global_show = self.show_video_switch.get()
         global_model = None
@@ -551,7 +578,7 @@ class App(ctk.CTk):
 
     def write_config(self):
         config = configparser.ConfigParser()
-        config_file = Path(__file__).parent / "config.ini"
+        config_file = Path(__file__).parent / "config/config.ini"
 
         if config_file.exists():
             config.read(config_file)
@@ -571,6 +598,12 @@ class App(ctk.CTk):
 
     def connect_button_event(self):
         global global_url
+        global_url = (
+            "http://"
+            + self.server_ip_entry.get().strip()
+            + ":"
+            + self.port_entry.get().strip()
+        )
         self.output_log.insert(
             "end",
             f"Connecting to {global_url}\n",
