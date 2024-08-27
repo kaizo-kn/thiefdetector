@@ -56,7 +56,8 @@ VOC/
 *_paddle_model/
 darknet53.conv.74
 yolov3-tiny.conv.15
-
+!tflite-model
+!yolo-model
 # GitHub Python GitIgnore ----------------------------------------------------------------------------------------------
 # Byte-compiled / optimized / DLL files
 __pycache__/
